@@ -1,7 +1,6 @@
 #!/bin/bash
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
-# HOME needs to be set for the ptpimg and streamrip modules to work correctly
 HOME=${SCRIPT_DIR}
 
 if [ -f ${SCRIPT_DIR}/.env ]; then
