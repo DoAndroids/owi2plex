@@ -15,13 +15,12 @@ setup(
     version=__version__,
     scripts=['owi2plex.py', 'version.py'],
     install_requires=[
-        'click==7.0',
-        'requests==2.21.0',
-        'lxml==4.3.2',
-        'future==0.17.1',
-        'pyyaml==5.1.2'
+        'click==8.1.7',
+        'requests==2.32.3',
+        'lxml==5.2.2',
+        'pyyaml==6.0.2',
     ],
-    #python_requires='>=3.6',
+    python_requires='>=3.11',
     author='Cristian Varela',
     author_email='cvarelaruiz@gmail.com',
     description='Exporter of EPG from OpenWebif to XMLTV to use with Plex',
@@ -35,11 +34,11 @@ setup(
         "Environment :: Console",
         "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
         "Natural Language :: English",
-        "Programming Language :: Python :: 3.7",
+        "Programming Language :: Python :: 3.11",
         "Topic :: Other/Nonlisted Topic"
     ],
     entry_points='''
         [console_scripts]
         owi2plex=owi2plex:main
-    ''' 
+    '''
 )

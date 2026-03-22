@@ -1,0 +1,4 @@
+-r base.txt
+
+# For uploading packages to PyPI
+twine==5.1.1

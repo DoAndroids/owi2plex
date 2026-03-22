@@ -1,58 +1,52 @@
 #!/usr/bin/env python3
+import sys
 import click
 import requests
 import re
-import collections
 import yaml
-import os
 import html
-import codecs
 import logging
 
+from importlib.metadata import version as pkg_version, PackageNotFoundError
 from lxml import etree
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, timezone
 
 
-__version__ = ''
-exec(open(os.path.dirname(os.path.realpath(__file__))+'/version.py').read())
-logger = None
+try:
+    __version__ = pkg_version('OWi2Plex')
+except PackageNotFoundError:
+    __version__ = 'unknown'
+
+logger = logging.getLogger('owi2plex')
 
 
 def unescape(text):
     """
-    Safe check of the existence of the unescape function as the future module
-    doesn't appear to have it yet.
-
-    https://github.com/PythonCharmers/python-future/issues/247
-
-    This function also replaces control characters for XML compatibility
+    Strips control characters that are illegal in XML, then decodes HTML
+    entities for XML compatibility.
     """
     try:
         text = re.sub(u'[^\u0020-\uD7FF\u0009\u000A\u000D\uE000-\uFFFD\U00010000-\U0010FFFF]+', '', text)
         return html.unescape(text)
-    except:
+    except Exception:
         return text
 
 
 def getAPIRoot(username, password, host, port):
     """
-    Simple function to form the url of the OpenWebif server.
+    Simple function to form the base URL of the OpenWebif server.
+    Credentials are NOT embedded in the URL; pass auth= to requests calls.
+
     More info at:
-    
     https://github.com/E2OpenPlugins/e2openplugin-OpenWebif/wiki/OpenWebif-API-documentation
     """
-    if username:
-        url = 'http://{}:{}@{}:{}'.format(
-                username, password, host, port)
-    else:
-        url = 'http://{}:{}'.format(host, port)
-    return url
+    return 'http://{}:{}'.format(host, port)
 
 
-def getBouquets(bouquet, api_root_url, list_bouquets):
+def getBouquets(bouquet, api_root_url, list_bouquets, auth=None):
     """
     Function to get the list of bouquets from the OpenWebif API
-    
+
     return_type: dict
     return_model:
         {
@@ -61,11 +55,10 @@ def getBouquets(bouquet, api_root_url, list_bouquets):
             "bouquet_name_n": "sRef_n",
         }
     """
-    global logger
-    result = collections.OrderedDict()
+    result = {}
     url = '{}/api/bouquets'.format(api_root_url)
     try:
-        bouquets_data = requests.get(url)
+        bouquets_data = requests.get(url, auth=auth)
         bouquets = bouquets_data.json()['bouquets']
         for b in bouquets:
             if list_bouquets:
@@ -77,13 +70,13 @@ def getBouquets(bouquet, api_root_url, list_bouquets):
     return result
 
 
-def getBouquetsServices(bouquets, api_root_url):
+def getBouquetsServices(bouquets, api_root_url, auth=None):
     """
     Function to return the list of services (channels) for each bouquet in the
     bouquets param
 
     params:
-        - boutquets: [bouquet_obj_1, bouquet_obj_2, ...]
+        - bouquets: [bouquet_obj_1, bouquet_obj_2, ...]
         - api_root_url: Root URL of the OpenWebif server
     returns:
         - type: dict
@@ -94,18 +87,18 @@ def getBouquetsServices(bouquets, api_root_url):
                 "bouquet_name_n": [svc_1_obj, svc_2_obj, ..., svc_n_obj]
             }
     """
-    services = collections.OrderedDict()
+    services = {}
     try:
         for bouquet_name, bouquet_svc_ref in bouquets.items():
             url = '{}/api/getservices?sRef={}'.format(api_root_url, bouquet_svc_ref)
-            services_data = requests.get(url)
+            services_data = requests.get(url, auth=auth)
             services[bouquet_name] = services_data.json()['services']
     except Exception:
         raise
     return services
 
 
-def getEPGs(bouquets_services, api_root_url):
+def getEPGs(bouquets_services, api_root_url, auth=None):
     """
     Function to get the EPGs for the services in the bouquet_services param.
 
@@ -121,7 +114,6 @@ def getEPGs(bouquets_services, api_root_url):
                 "program_id": [ event_obj_1, event_obj_2, ...]
             }
     """
-    global logger
     epg = {}
     for _, services in bouquets_services.items():
         for service in services:
@@ -132,21 +124,19 @@ def getEPGs(bouquets_services, api_root_url):
                     url)
                 logger.info(debug_message)
                 try:
-                    service_epg_data = requests.get(url)
+                    service_epg_data = requests.get(url, auth=auth)
                     epg[service['program']] = service_epg_data.json()['events']
                 except Exception:
                     raise
     return epg
 
 
-def getOffset(api_root_url):
-    global logger
-    now = datetime.timestamp(datetime.now())
-    offset = (datetime.fromtimestamp(now) - datetime.utcfromtimestamp(now)).total_seconds()
-    hours = round(offset / 3600)
-    minutes = (offset - (hours * 3600))
+def getOffset():
+    offset = datetime.now(timezone.utc).astimezone().utcoffset()
+    total_seconds = offset.total_seconds()
+    hours = round(total_seconds / 3600)
+    minutes = total_seconds - (hours * 3600)
     tzo = "{:+05}".format(int(hours * 100 + (round(minutes / 900) * 900 / 60)))
-
     logger.info("Setting TZ Offset from UTC to {}".format(tzo))
     return tzo
 
@@ -165,7 +155,7 @@ def addChannels2XML(xmltv, bouquets_services, epg, api_root_url, continuous_numb
                 channel = etree.SubElement(xmltv, 'channel')
                 channel.attrib['id'] = '{}'.format(service['program'])
                 etree.SubElement(channel, 'display-name').text = unescape(service['servicename'])
-                if (continuous_numbering == True):
+                if continuous_numbering:
                     etree.SubElement(channel, 'display-name').text = str(continuous_service_position)
                 else:
                     etree.SubElement(channel, 'display-name').text = str(service['pos'])
@@ -179,8 +169,8 @@ def addChannels2XML(xmltv, bouquets_services, epg, api_root_url, continuous_numb
 
 def addCategories2Programme(title, programme, event, overrides):
     """
-    Function to add the catergories to a program. Returns the XML program object
-    with the cateogry added.
+    Function to add the categories to a program. Returns the XML program object
+    with the category added.
 
     returns:
         - type: lxml.etree
@@ -192,7 +182,7 @@ def addCategories2Programme(title, programme, event, overrides):
         for pattern, override_categories in overrides.items():
             if pattern in title.upper():
                 for category in override_categories:
-                    category_overrides.append(category) 
+                    category_overrides.append(category)
 
     if len(category_overrides) > 0:
         for cat_override in category_overrides:
@@ -200,7 +190,7 @@ def addCategories2Programme(title, programme, event, overrides):
             programme_category.attrib['lang'] = 'en'
             programme_category.text = '{}'.format(cat_override)
     elif categories:
-        for category in categories.groupdict().values(): 
+        for category in categories.groupdict().values():
             if category:
                 programme_category = etree.SubElement(programme, 'category')
                 programme_category.attrib['lang'] = 'en'
@@ -208,11 +198,11 @@ def addCategories2Programme(title, programme, event, overrides):
 
     return programme
 
+
 def parseSEP(text):
     """
-    Function to parse the Seasson.Episode.Part numbers
-    """ 
-    global logger
+    Function to parse the Season.Episode.Part numbers
+    """
     logger.debug("ParsingSEP: {}".format(text))
     S = ''
     E = ''
@@ -235,14 +225,14 @@ def parseSEP(text):
         if 'S' in group_names:
             S = '{}'.format(int(match.group('S')) - 1 if match.group('S') else '')
         else:
-            S ='0'
+            S = '0'
         if 'E' in group_names:
             E = '{}'.format(int(match.group('E')) - 1 if match.group('E') else '')
             if E == '1' or E == '0':
                 is_premiere = True
         if 'P' in group_names:
             P = '{}'.format(int(match.group('P')) - 1 if match.group('P') else '')
-    logger.debug("ParseSEP ==>{}: {}.{}.{}".format(is_a_match, S,E,P))    
+    logger.debug("ParseSEP ==>{}: {}.{}.{}".format(is_a_match, S, E, P))
     return is_a_match, '{}.{}.{}'.format(S, E, P), is_premiere
 
 
@@ -254,35 +244,32 @@ def addSeriesInfo2Programme(programme, event, air_dt):
     returns:
         - type: lxml.etree
     """
-    original_air_date = re.search( r'(\d{2})[\/|\.|\-](\d{2})[\/|\.|\-](\d{4})', event['shortdesc'])
+    original_air_date = re.search(r'(\d{2})[\/|\.|\-](\d{2})[\/|\.|\-](\d{4})', event['shortdesc'])
     match_epnum, epnum, is_premiere = parseSEP(event['shortdesc'])
 
     # Don't attempt to put an episode-num to certain categories
-    try:
-        existing_category = programme.find('category')
-        if existing_category.text in ('Movie', 'News'):
-            return programme
-    except AttributeError:
-        pass
+    existing_category = programme.find('category')
+    if existing_category is not None and existing_category.text in ('Movie', 'News'):
+        return programme
 
     if match_epnum:
         programme_epnum = etree.SubElement(programme, 'episode-num')
         programme_epnum.attrib['system'] = 'xmltv_ns'
         programme_epnum.text = epnum
 
-        # If it hasn't got a category but a epnum then it must be a Series
+        # If it hasn't got a category but has an epnum then it must be a Series
         if existing_category is None:
             programme_category = etree.SubElement(programme, 'category')
             programme_category.attrib['lang'] = 'en'
             programme_category.text = 'Series'
 
-        # Notes the first screening of a new show.
-        if epnum == '1.1.' or epnum == '1.1.1':
-            _ = etree.SubElement(programme, 'new')
+        # Notes the first screening of a new show (XMLTV uses zero-based indexing)
+        if epnum == '0.0.' or epnum == '0.0.0':
+            etree.SubElement(programme, 'new')
 
         # Notes the first screened episode of a new or existing show.
         if is_premiere:
-            _ = etree.SubElement(programme, 'premiere')
+            etree.SubElement(programme, 'premiere')
 
     if original_air_date:
         programme_epnum = etree.SubElement(programme, 'episode-num')
@@ -294,28 +281,24 @@ def addSeriesInfo2Programme(programme, event, air_dt):
         try:
             original_air_dt = datetime.strptime(programme_epnum.text, '%Y-%m-%d')
             if air_dt.date() > original_air_dt.date():
-                _ = etree.SubElement(programme, 'previously-shown')
+                etree.SubElement(programme, 'previously-shown')
         except ValueError as e:
-            pass
-            # The orinal air date cannot be parse and will therefore be ignored
-            
+            logger.debug("The original air date cannot be parsed and will be ignored: {}".format(e))
+
     return programme
 
 
 def addMovieCredits(programme, event):
-    try:
-        existing_category = programme.find('category')
-        if existing_category.text in ('Movie'):
-            cast = event['longdesc'].split('\n', 2)
-            if len(cast)>2:
-                credits = etree.SubElement(programme, 'credits')
-                director = etree.SubElement(credits, 'director')
-                director.text = cast[1]
-                for cast in cast[2][:-1].split('\n'):
-                    actor = etree.SubElement(credits, 'actor')
-                    actor.text = cast
-    except AttributeError:
-        pass
+    existing_category = programme.find('category')
+    if existing_category is not None and existing_category.text in ('Movie',):
+        cast = event['longdesc'].split('\n', 2)
+        if len(cast) > 2:
+            credits = etree.SubElement(programme, 'credits')
+            director = etree.SubElement(credits, 'director')
+            director.text = cast[1]
+            for cast in cast[2][:-1].split('\n'):
+                actor = etree.SubElement(credits, 'actor')
+                actor.text = cast
     return programme
 
 
@@ -330,7 +313,7 @@ def load_overrides(category_override):
                     for title in ltitles:
                         if transformed_overrides.get(title.upper(), None):
                             transformed_overrides[title.upper()].append(cat)
-                        else: 
+                        else:
                             transformed_overrides[title.upper()] = [cat]
             except yaml.YAMLError:
                 raise
@@ -339,7 +322,7 @@ def load_overrides(category_override):
 
 def addEvents2XML(xmltv, epg, tzoffset, category_override):
     """
-    Function to add events (programms) to the XMLTV structure.
+    Function to add events (programmes) to the XMLTV structure.
 
     returns:
         - type: lxml.etree
@@ -348,7 +331,7 @@ def addEvents2XML(xmltv, epg, tzoffset, category_override):
 
     for service_program, events in epg.items():
         for event in events:
-            # Time Calculations and transformations
+            # Time calculations — duration is in minutes (as returned by OpenWebif API)
             start_dt = datetime.fromtimestamp(event['begin_timestamp'])
             start_dt_str = start_dt.strftime("%Y%m%d%H%M%S {}".format(tzoffset))
             end_dt = start_dt + timedelta(minutes=event['duration'])
@@ -379,18 +362,17 @@ def addEvents2XML(xmltv, epg, tzoffset, category_override):
             if event['shortdesc'] == '':
                 event['shortdesc'] = event['longdesc']
 
-            # Get the title and remove the word NEW if present 
+            # Get the title and remove the word NEW if present
             title = unescape(event['title'])
             if 'New: ' in title:
-                #_ = etree.SubElement(programme, 'premiere')
                 title = title.replace('New: ', '')
             programme_title = etree.SubElement(programme, 'title')
-            programme_title.text = title 
+            programme_title.text = title
             programme_title.attrib['lang'] = 'en'
 
             programme = addCategories2Programme(event['title'], programme, event, overrides)
-            programme = addSeriesInfo2Programme(programme, event, start_dt)   
-            programme = addMovieCredits(programme, event)         
+            programme = addSeriesInfo2Programme(programme, event, start_dt)
+            programme = addMovieCredits(programme, event)
 
     return xmltv
 
@@ -404,7 +386,6 @@ def generateXMLTV(bouquets_services, epg, api_root_url, tzoffset,
         - type: string
         - desc: Representation of the XMLTV object as a String.
     """
-    global logger
     logger.info(u"Generating XMLTV payload.")
     xmltv = etree.Element('tv')
     xmltv.attrib['generator-info-url'] = 'https://github.com/cvarelaruiz'
@@ -429,52 +410,54 @@ def generateXMLTV(bouquets_services, epg, api_root_url, tzoffset,
     type=click.STRING)
 @click.option('-c', '--continuous-numbering', help='Continuous numbering across'
               ' bouquets.', is_flag=True)
-@click.option('-l', '--list-bouquets', help='Display a list of bouquets.', 
+@click.option('-l', '--list-bouquets', help='Display a list of bouquets.',
     is_flag=True)
 @click.option('-V', '--version', help='Displays the version of the package.',
     is_flag=True)
 @click.option('-O', '--category-override', help='Category override YAML file. '
-              'See documentation for file format.', type=click.STRING,)
+              'See documentation for file format.', type=click.STRING)
 @click.option('-d', '--debug', help='Verbose Debugging.', is_flag=True)
 def main(bouquet=None, username=None, password=None, host='localhost', port=80,
     output_file='epg.xmltv', continuous_numbering=False, list_bouquets=False,
     version=False, category_override=None, debug=False):
 
-    # Initialize Debugging
     if debug:
         level = logging.DEBUG
     else:
         level = logging.INFO
-    
+
     log_format = "%(levelname)s %(asctime)s - %(message)s"
     logging.basicConfig(
-        filename = "./owi2plex.log",
-        filemode = "w",
-        format = log_format,
-        level = level)
-    global logger
-    logger = logging.getLogger('OWI2PLEX')
+        filename="./owi2plex.log",
+        filemode="w",
+        format=log_format,
+        level=level)
 
     if version:
         print(u"OWI2PLEX version {}".format(__version__))
-        exit(0)
+        sys.exit(0)
 
+    auth = (username, password) if username else None
     api_root_url = getAPIRoot(username=username, password=password, host=host, port=port)
 
-    # Retrieve Data from OpenWebIf
+    # Retrieve bouquets; exit early if only listing was requested
     bouquets = getBouquets(bouquet=bouquet, api_root_url=api_root_url,
-        list_bouquets=list_bouquets)
-    bouquets_services = getBouquetsServices(bouquets=bouquets, api_root_url=api_root_url)
-    epg = getEPGs(bouquets_services=bouquets_services, api_root_url=api_root_url)
-    tzoffset = getOffset(api_root_url=api_root_url)
+        list_bouquets=list_bouquets, auth=auth)
 
-    # Generate the XMLTV file 
+    if list_bouquets:
+        sys.exit(0)
+
+    bouquets_services = getBouquetsServices(bouquets=bouquets, api_root_url=api_root_url, auth=auth)
+    epg = getEPGs(bouquets_services=bouquets_services, api_root_url=api_root_url, auth=auth)
+    tzoffset = getOffset()
+
+    # Generate the XMLTV file
     xmltv = generateXMLTV(
         bouquets_services, epg, api_root_url, tzoffset, continuous_numbering,
         category_override)
     logger.info(u"Saving XMLTV payload to file {}".format(output_file))
     try:
-        with codecs.open(output_file, 'w', 'utf-8-sig') as xmltv_file:
+        with open(output_file, 'w', encoding='utf-8-sig') as xmltv_file:
             xmltv_file.write(xmltv)
             logger.info(u"Boom!")
     except Exception:
